@@ -1,0 +1,56 @@
+name: SDK入りでビルドを確かめる
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: backhaul のブランチ名またはコミット
+        required: true
+        default: main
+        type: string
+      sdk_tag:
+        description: 使うSDKのリリース名
+        required: true
+        default: zoom-sdk-windows-7.2.5.52204
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: kajisho5/backhaul
+          ref: ${{ inputs.ref }}
+
+      - name: SDKを取り出す
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.sdk_tag }}
+        run: |
+          gh release download $env:TAG --repo ${{ github.repository }} --pattern "$env:TAG.zip" --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          7z x "$env:RUNNER_TEMP\$env:TAG.zip" "-o$env:RUNNER_TEMP\sdk" "$env:TAG\x64\*" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "SDK_DIR=$env:RUNNER_TEMP\sdk\$env:TAG\x64" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 設定
+        run: cmake -S . -B build -DBACKHAUL_ZOOM_SDK_DIR="$env:SDK_DIR"
+
+      - name: ビルド
+        run: cmake --build build --config Release
+
+      - name: テスト
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: 起動を確かめる（引数なしなら使い方を出して終了コード2）
+        shell: pwsh
+        run: |
+          Copy-Item build\src\zoom\Release\backhaul_probe_receive.exe "$env:SDK_DIR\bin\"
+          & "$env:SDK_DIR\bin\backhaul_probe_receive.exe"
+          if ($LASTEXITCODE -ne 2) { Write-Error "想定外の終了コード: $LASTEXITCODE"; exit 1 }
+          exit 0
