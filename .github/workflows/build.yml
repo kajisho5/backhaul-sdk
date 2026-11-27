@@ -82,6 +82,7 @@ jobs:
           if (-not $exe) { Write-Error "backhaul.exe がありません"; exit 1 }
           Copy-Item $exe.FullName $out
           Copy-Item docs\\probe.ja.md $out
+          Copy-Item docs\\licenses "$out\\licenses" -Recurse
           windeployqt --release --no-translations --qmldir src\\app\\qml "$out\\backhaul.exe"
           if ($LASTEXITCODE -ne 0) { Write-Error "Qtの部品を集められませんでした"; exit 1 }
           foreach ($f in "backhaul.exe","backhaul_probe_receive.exe","sdk.dll","Qt6Quick.dll") {
