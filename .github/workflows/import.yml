@@ -1,0 +1,84 @@
+name: SDKを取り込む
+
+on:
+  workflow_dispatch:
+    inputs:
+      drive_file_id:
+        description: Google Drive のファイルID
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Driveから取得
+        env:
+          FILE_ID: ${{ inputs.drive_file_id }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet gdown
+          mkdir dl
+          gdown "$FILE_ID" -O dl/
+          ls -l dl
+
+      - name: 中身を確かめる
+        id: check
+        run: |
+          set -euo pipefail
+          count=$(find dl -maxdepth 1 -type f | wc -l)
+          if [ "$count" -ne 1 ]; then echo "ファイルが1つではありません: $count"; exit 1; fi
+          zip=$(find dl -maxdepth 1 -type f)
+          name=$(basename "$zip")
+          case "$name" in
+            zoom-sdk-windows-*.zip) ;;
+            *) echo "想定外のファイル名です: $name"; exit 1 ;;
+          esac
+          unzip -tq "$zip"
+          sha256sum "$zip" | tee dl.sha256
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          echo "tag=${name%.zip}" >> "$GITHUB_OUTPUT"
+
+      - name: 一覧とヘッダーを取り出す
+        env:
+          ZIP: ${{ steps.check.outputs.zip }}
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p inventory "headers/$TAG"
+          unzip -Z1 "$ZIP" | LC_ALL=C sort > "inventory/$TAG.txt"
+          cut -d' ' -f1 dl.sha256 > "inventory/$TAG.sha256"
+          rm -rf "headers/$TAG"
+          unzip -q "$ZIP" '*.h' -d "headers/$TAG"
+          find "headers/$TAG" -type f | wc -l
+          du -sh "headers/$TAG"
+
+      - name: リリースに保管
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZIP: ${{ steps.check.outputs.zip }}
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" --clobber
+          else
+            gh release create "$TAG" "$ZIP" --title "$TAG" --notes "Zoom Meeting SDK for Windows（非公開保管）"
+          fi
+
+      - name: 一覧とヘッダーを記録
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "kajisho5"
+          git config user.email "info@seventh-well.com"
+          git add inventory headers
+          if git diff --cached --quiet; then echo "変更なし"; exit 0; fi
+          git commit -m "$TAG の一覧とヘッダーを追加"
+          git push
