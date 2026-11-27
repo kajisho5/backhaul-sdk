@@ -26,6 +26,13 @@ jobs:
           repository: kajisho5/backhaul
           ref: ${{ inputs.ref }}
 
+      - name: Qtを入れる
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          cache: true
+
       - name: SDKを取り出す
         shell: pwsh
         env:
@@ -39,7 +46,7 @@ jobs:
           "SDK_DIR=$env:RUNNER_TEMP\sdk\$env:TAG\x64" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: 設定
-        run: cmake -S . -B build -DBACKHAUL_ZOOM_SDK_DIR="$env:SDK_DIR"
+        run: cmake -S . -B build -DBACKHAUL_BUILD_APP=ON -DBACKHAUL_ZOOM_SDK_DIR="$env:SDK_DIR"
 
       - name: ビルド
         run: cmake --build build --config Release
@@ -59,15 +66,39 @@ jobs:
       - name: 実行に必要な一式をまとめる
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path out\backhaul-probe | Out-Null
-          Copy-Item "$env:SDK_DIR\bin\*" out\backhaul-probe\ -Recurse
-          Copy-Item docs\probe.ja.md out\backhaul-probe\
-          if (-not (Test-Path out\backhaul-probe\backhaul_probe_receive.exe)) { Write-Error "実行ファイルが入っていません"; exit 1 }
-          if (-not (Test-Path out\backhaul-probe\sdk.dll)) { Write-Error "sdk.dll が入っていません"; exit 1 }
+          $out = "out\\backhaul"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item "$env:SDK_DIR\\bin\\*" $out -Recurse
+          $exe = Get-ChildItem -Recurse build\\src\\app -Filter backhaul.exe | Select-Object -First 1
+          if (-not $exe) { Write-Error "backhaul.exe がありません"; exit 1 }
+          Copy-Item $exe.FullName $out
+          Copy-Item docs\\probe.ja.md $out
+          windeployqt --release --no-translations --qmldir src\\app\\qml "$out\\backhaul.exe"
+          if ($LASTEXITCODE -ne 0) { Write-Error "Qtの部品を集められませんでした"; exit 1 }
+          foreach ($f in "backhaul.exe","backhaul_probe_receive.exe","sdk.dll","Qt6Quick.dll") {
+            if (-not (Test-Path "$out\\$f")) { Write-Error "$f が入っていません"; exit 1 }
+          }
+
+      - name: 本体の起動を確かめる（デモ表示で画面を1枚撮る）
+        shell: pwsh
+        env:
+          QT_QUICK_BACKEND: software
+        run: |
+          $p = Start-Process -FilePath "out\\backhaul\\backhaul.exe" -ArgumentList '--demo','--settings','zoom','--screenshot',"$PWD\\app-demo.png" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "終了コード $($p.ExitCode)"; exit 1 }
+          $p = Start-Process -FilePath "out\\backhaul\\backhaul.exe" -ArgumentList '--settings','zoom','--screenshot',"$PWD\\app-real.png" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "終了コード $($p.ExitCode)（Zoom入り・デモなし）"; exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: backhaul-probe-windows-x64
+          name: backhaul-windows-x64
           path: out
           retention-days: 7
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screens
+          path: |
+            app-demo.png
+            app-real.png
+          retention-days: 7
