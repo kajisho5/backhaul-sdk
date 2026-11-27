@@ -55,3 +55,19 @@ jobs:
           "終了コード: $LASTEXITCODE"
           if ($LASTEXITCODE -ne 2) { Write-Error "想定外の終了コード"; exit 1 }
           exit 0
+
+      - name: 実行に必要な一式をまとめる
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out\backhaul-probe | Out-Null
+          Copy-Item "$env:SDK_DIR\bin\*" out\backhaul-probe\ -Recurse
+          Copy-Item docs\probe.ja.md out\backhaul-probe\
+          if (-not (Test-Path out\backhaul-probe\backhaul_probe_receive.exe)) { Write-Error "実行ファイルが入っていません"; exit 1 }
+          if (-not (Test-Path out\backhaul-probe\sdk.dll)) { Write-Error "sdk.dll が入っていません"; exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backhaul-probe-windows-x64
+          path: out
+          retention-days: 7
+
