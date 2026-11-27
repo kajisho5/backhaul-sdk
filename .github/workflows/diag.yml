@@ -1,0 +1,31 @@
+name: 終了時の異常を調べる
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 調べる
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: zoom-sdk-windows-7.2.5.52204
+        run: |
+          gh release download $env:TAG --pattern "$env:TAG.zip" --dir $env:RUNNER_TEMP
+          7z x "$env:RUNNER_TEMP\$env:TAG.zip" "-o$env:RUNNER_TEMP\sdk" "$env:TAG\x64\*" -y | Out-Null
+          $sdk = "$env:RUNNER_TEMP\sdk\$env:TAG\x64"
+          cmake -S diag -B build "-DSDK_DIR=$($sdk -replace '\\','/')"
+          cmake --build build --config Release
+          foreach ($n in "load_only","init_cleanup") {
+            Copy-Item "build\Release\$n.exe" "$sdk\bin\"
+            & "$sdk\bin\$n.exe"
+            "$n 終了コード: $LASTEXITCODE"
+          }
+          Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000} -MaxEvents 4 -ErrorAction SilentlyContinue | ForEach-Object { $_.Message }
+          exit 0
