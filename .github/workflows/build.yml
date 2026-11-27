@@ -45,8 +45,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           "SDK_DIR=$env:RUNNER_TEMP\sdk\$env:TAG\x64" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: ASIOの開発キットをSteinbergから取ってくる
+        shell: pwsh
+        run: |
+          curl.exe -sSL --fail --max-time 180 -o "$env:RUNNER_TEMP\asiosdk.zip" https://www.steinberg.net/asiosdk
+          if ($LASTEXITCODE -ne 0) { Write-Error "ASIOの開発キットを取れませんでした"; exit 1 }
+          7z x "$env:RUNNER_TEMP\asiosdk.zip" "-o$env:RUNNER_TEMP\asio" -y | Out-Null
+          if (-not (Test-Path "$env:RUNNER_TEMP\asio\ASIOSDK\common\asio.h")) { Write-Error "開発キットの中身が想定と違います"; exit 1 }
+          "ASIO_DIR=$env:RUNNER_TEMP\asio\ASIOSDK" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: 設定
-        run: cmake -S . -B build -DBACKHAUL_BUILD_APP=ON -DBACKHAUL_ZOOM_SDK_DIR="$env:SDK_DIR"
+        run: cmake -S . -B build -DBACKHAUL_BUILD_APP=ON -DBACKHAUL_ZOOM_SDK_DIR="$env:SDK_DIR" -DBACKHAUL_ASIO_SDK_DIR="$env:ASIO_DIR"
 
       - name: ビルド
         run: cmake --build build --config Release
