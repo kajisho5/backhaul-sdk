@@ -24,8 +24,14 @@ on:
         default: ''
         type: string
 
+      update_release:
+        description: 更新として出す（インストーラーに署名して、配ったアプリに届ける。ASIOなしのときだけ使える）
+        required: false
+        default: false
+        type: boolean
+
 permissions:
-  contents: write   # リリースにzipを置くため（publish_tag を入れたときだけ使う）
+  contents: write   # リリースにzipやインストーラーを置くため（publish_tag・update_release を入れたときだけ使う）
 
 jobs:
   build:
@@ -55,12 +61,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           "SDK_DIR=$env:RUNNER_TEMP\sdk\$env:TAG\x64" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: 渡すzipにASIOを入れない
-        if: ${{ inputs.publish_tag != '' && inputs.asio }}
+      - name: 渡すものにASIOを入れない
+        if: ${{ (inputs.publish_tag != '' || inputs.update_release) && inputs.asio }}
         shell: pwsh
         run: |
-          Write-Error "publish_tag を入れるときは asio を外してください"
+          Write-Error "publish_tag や update_release を使うときは asio を外してください"
           exit 1
+
+      - name: 更新の部品（WinSparkle）を取ってくる
+        shell: pwsh
+        run: |
+          $dir = & packaging\fetch_winsparkle.ps1 -Into $env:RUNNER_TEMP
+          "WINSPARKLE_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: ASIOの開発キットをSteinbergから取ってくる
         if: ${{ inputs.asio }}
@@ -77,8 +89,13 @@ jobs:
         run: |
           $more = @()
           if ($env:ASIO_DIR) { $more += "-DBACKHAUL_ASIO_SDK_DIR=$env:ASIO_DIR" }
-          cmake -S . -B build -DBACKHAUL_BUILD_APP=ON "-DBACKHAUL_ZOOM_SDK_DIR=$env:SDK_DIR" @more
+          cmake -S . -B build -DBACKHAUL_BUILD_APP=ON "-DBACKHAUL_ZOOM_SDK_DIR=$env:SDK_DIR" "-DBACKHAUL_WINSPARKLE_DIR=$env:WINSPARKLE_DIR" @more
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          $line = Select-String -Path build\CMakeCache.txt -Pattern '^CMAKE_PROJECT_VERSION:[^=]*=(\d+\.\d+\.\d+)$'
+          if (-not $line) { Write-Error "バージョン番号を読めませんでした"; exit 1 }
+          $version = $line.Matches[0].Groups[1].Value
+          "バージョン $version"
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: ビルド
         run: cmake --build build --config Release
@@ -104,11 +121,12 @@ jobs:
           $exe = Get-ChildItem -Recurse build\\src\\app -Filter backhaul.exe | Select-Object -First 1
           if (-not $exe) { Write-Error "backhaul.exe がありません"; exit 1 }
           Copy-Item $exe.FullName $out
+          Copy-Item (Join-Path $exe.DirectoryName 'WinSparkle.dll') $out
           Copy-Item docs\\probe.ja.md $out
           Copy-Item docs\\licenses "$out\\licenses" -Recurse
           windeployqt --release --no-translations --qmldir src\\app\\qml "$out\\backhaul.exe"
           if ($LASTEXITCODE -ne 0) { Write-Error "Qtの部品を集められませんでした"; exit 1 }
-          foreach ($f in "backhaul.exe","backhaul_probe_receive.exe","sdk.dll","Qt6Quick.dll") {
+          foreach ($f in "backhaul.exe","backhaul_probe_receive.exe","sdk.dll","Qt6Quick.dll","WinSparkle.dll","licenses\\WinSparkle.txt") {
             if (-not (Test-Path "$out\\$f")) { Write-Error "$f が入っていません"; exit 1 }
           }
 
@@ -122,6 +140,31 @@ jobs:
           $p = Start-Process -FilePath "out\\backhaul\\backhaul.exe" -ArgumentList '--settings','zoom','--screenshot',"$PWD\\app-real.png" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Write-Error "終了コード $($p.ExitCode)（Zoom入り・デモなし）"; exit 1 }
 
+      - name: インストーラーを作る
+        shell: pwsh
+        run: |
+          $iscc = & packaging\fetch_innosetup.ps1 -Into $env:RUNNER_TEMP
+          & $iscc "/DAppVersion=$env:APP_VERSION" packaging\backhaul.iss
+          if ($LASTEXITCODE -ne 0) { Write-Error "インストーラーを作れませんでした"; exit 1 }
+          $setup = "out\backhaul-$env:APP_VERSION-setup.exe"
+          if (-not (Test-Path $setup)) { Write-Error "$setup がありません"; exit 1 }
+          "SETUP_FILE=$setup" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: インストーラーで入れて、入れたものの起動を確かめる
+        shell: pwsh
+        env:
+          QT_QUICK_BACKEND: software
+        run: |
+          $dir = "$env:RUNNER_TEMP\installed"
+          $p = Start-Process -FilePath $env:SETUP_FILE -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',"/DIR=`"$dir`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "インストーラーの終了コード $($p.ExitCode)"; exit 1 }
+          foreach ($f in "backhaul.exe","sdk.dll","WinSparkle.dll","unins000.exe") {
+            if (-not (Test-Path "$dir\$f")) { Write-Error "入れた先に $f がありません"; exit 1 }
+          }
+          $p = Start-Process -FilePath "$dir\backhaul.exe" -ArgumentList '--demo','--settings','software','--screenshot',"$PWD\app-installed.png" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "入れたものの終了コード $($p.ExitCode)"; exit 1 }
+          if (-not (Test-Path app-installed.png)) { Write-Error "画面を撮れませんでした"; exit 1 }
+
       - uses: actions/upload-artifact@v4
         with:
           name: backhaul-windows-x64
@@ -134,6 +177,7 @@ jobs:
           path: |
             app-demo.png
             app-real.png
+            app-installed.png
           retention-days: 7
 
       - name: 人に渡すzipをリリースに置く
@@ -154,3 +198,42 @@ jobs:
           gh release upload $env:TAG $zip --repo ${{ github.repository }} --clobber
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
+      - name: 更新として出す（署名して、インストーラーと一覧をリリース updates に置く）
+        if: ${{ inputs.update_release }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if (-not $env:UPDATE_SIGNING_KEY) { Write-Error "秘密の値 UPDATE_SIGNING_KEY がありません（Settings → Secrets and variables → Actions）"; exit 1 }
+          $repo = "${{ github.repository }}"
+          $name = "backhaul-$env:APP_VERSION-setup.exe"
+
+          # 今出ているバージョンより新しいときだけ出す（配ったアプリを古いものへ戻さない）。
+          gh release view updates --repo $repo *> $null
+          $exists = ($LASTEXITCODE -eq 0)
+          if ($exists) {
+            $assets = gh release view updates --repo $repo --json assets --jq '.assets[].name'
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            if ($assets -contains 'latest.json') {
+              gh release download updates --repo $repo --pattern latest.json --dir "$env:RUNNER_TEMP\now" --clobber
+              if ($LASTEXITCODE -ne 0) { exit 1 }
+              $now = (Get-Content "$env:RUNNER_TEMP\now\latest.json" -Raw | ConvertFrom-Json).version
+              if ([version]$env:APP_VERSION -le [version]$now) { Write-Error "バージョン $env:APP_VERSION は、今出ている $now より新しくありません"; exit 1 }
+            }
+          }
+
+          python -m pip install --quiet cryptography==50.0.1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python packaging\make_feed.py --version $env:APP_VERSION --installer $env:SETUP_FILE --url "https://github.com/$repo/releases/download/updates/$name" --out out\feed
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          if (-not $exists) {
+            gh release create updates --repo $repo --title "backhaul updates" --latest=false --notes "Installers of backhaul for Windows 10/11 (64-bit), and the two small files the program reads to find a newer version. To install, download the newest backhaul-x.y.z-setup.exe. A licence key is required."
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          # インストーラーが先。一覧は、置き終わったものだけを指す。
+          gh release upload updates $env:SETUP_FILE --repo $repo --clobber
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          gh release upload updates out\feed\appcast.xml out\feed\latest.json --repo $repo --clobber
+          if ($LASTEXITCODE -ne 0) { exit 1 }
