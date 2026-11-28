@@ -13,9 +13,19 @@ on:
         required: true
         default: zoom-sdk-windows-7.2.5.52204
         type: string
+      asio:
+        description: ASIOを入れる（入れたものは Steinberg との契約が済むまで人に渡さない）
+        required: true
+        default: true
+        type: boolean
+      publish_tag:
+        description: 人に渡すzipを置くリリース名（空なら置かない。ASIOなしのときだけ使える）
+        required: false
+        default: ''
+        type: string
 
 permissions:
-  contents: read
+  contents: write   # リリースにzipを置くため（publish_tag を入れたときだけ使う）
 
 jobs:
   build:
@@ -45,7 +55,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           "SDK_DIR=$env:RUNNER_TEMP\sdk\$env:TAG\x64" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: 渡すzipにASIOを入れない
+        if: ${{ inputs.publish_tag != '' && inputs.asio }}
+        shell: pwsh
+        run: |
+          Write-Error "publish_tag を入れるときは asio を外してください"
+          exit 1
+
       - name: ASIOの開発キットをSteinbergから取ってくる
+        if: ${{ inputs.asio }}
         shell: pwsh
         run: |
           curl.exe -sSL --fail --max-time 180 -o "$env:RUNNER_TEMP\asiosdk.zip" https://www.steinberg.net/asiosdk
@@ -55,7 +73,12 @@ jobs:
           "ASIO_DIR=$env:RUNNER_TEMP\asio\ASIOSDK" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: 設定
-        run: cmake -S . -B build -DBACKHAUL_BUILD_APP=ON -DBACKHAUL_ZOOM_SDK_DIR="$env:SDK_DIR" -DBACKHAUL_ASIO_SDK_DIR="$env:ASIO_DIR"
+        shell: pwsh
+        run: |
+          $more = @()
+          if ($env:ASIO_DIR) { $more += "-DBACKHAUL_ASIO_SDK_DIR=$env:ASIO_DIR" }
+          cmake -S . -B build -DBACKHAUL_BUILD_APP=ON "-DBACKHAUL_ZOOM_SDK_DIR=$env:SDK_DIR" @more
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: ビルド
         run: cmake --build build --config Release
@@ -112,3 +135,22 @@ jobs:
             app-demo.png
             app-real.png
           retention-days: 7
+
+      - name: 人に渡すzipをリリースに置く
+        if: ${{ inputs.publish_tag != '' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.publish_tag }}
+        run: |
+          $zip = "$env:TAG-windows-x64.zip"
+          7z a $zip .\out\backhaul | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          gh release view $env:TAG --repo ${{ github.repository }} *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:TAG --repo ${{ github.repository }} --title $env:TAG --notes "backhaul for Windows 10/11 (64-bit), without ASIO. Unzip and run backhaul.exe. A licence key is required."
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          gh release upload $env:TAG $zip --repo ${{ github.repository }} --clobber
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
