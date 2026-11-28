@@ -1,0 +1,30 @@
+name: いつも同じ名前のインストーラーを置き直す
+
+# 販売ページの「ダウンロード」が開く backhaul-setup.exe を、いま出ているバージョンの
+# インストーラーと同じ中身にする。ふだんは「更新として出す」ときに一緒に置かれるので、
+# これを動かすのは、置き損ねたときだけ。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: いま出ているバージョンのインストーラーを、決まった名前でも置く
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release download updates --repo "$REPO" --pattern latest.json --dir now
+          version=$(jq -r '.version' now/latest.json)
+          case "$version" in
+            ''|*[!0-9.]*) echo "latest.json のバージョンが読めません: $version" >&2; exit 1 ;;
+          esac
+          gh release download updates --repo "$REPO" --pattern "backhaul-$version-setup.exe" --dir now
+          cp "now/backhaul-$version-setup.exe" backhaul-setup.exe
+          gh release upload updates backhaul-setup.exe --repo "$REPO" --clobber
+          echo "backhaul-setup.exe をバージョン $version と同じ中身にしました"

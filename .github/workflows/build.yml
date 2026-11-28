@@ -235,5 +235,9 @@ jobs:
           # インストーラーが先。一覧は、置き終わったものだけを指す。
           gh release upload updates $env:SETUP_FILE --repo $repo --clobber
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          # 販売ページの「ダウンロード」は、いつも同じ名前のこのファイルを開く。
+          Copy-Item $env:SETUP_FILE out\backhaul-setup.exe
+          gh release upload updates out\backhaul-setup.exe --repo $repo --clobber
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           gh release upload updates out\feed\appcast.xml out\feed\latest.json --repo $repo --clobber
           if ($LASTEXITCODE -ne 0) { exit 1 }
