@@ -11,3 +11,13 @@ backhaul（https://github.com/kajisho5/backhaul）のビルドに使う Zoom Mee
 
 Actions の「SDKを取り込む」を、Google Drive のファイルIDを指定して実行します。
 実行中だけ、そのファイルが「リンクを知っている全員」に見える設定になっている必要があります。
+
+## インストーラーと更新
+
+「SDK入りでビルドを確かめる」は、毎回インストーラー（`backhaul-<バージョン>-setup.exe`）も作り、入れて起動するところまで確かめます（できたものは実行結果の添付に入ります）。
+
+`asio` を外して `update_release` を入れると、インストーラーに署名して、リリース `updates` にインストーラー・`appcast.xml`・`latest.json` を置きます。配ったアプリはこれを見て更新します。
+
+- 署名の鍵は「秘密の値」`UPDATE_SIGNING_KEY` に置きます（無いと止まります）。
+- 今出ているバージョンより新しくないと止まります。
+- 手順とファイルの説明は backhaul の `packaging/README.md` にあります。
